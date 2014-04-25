@@ -209,6 +209,14 @@ impl rtio::RtioPipe for FileDesc {
     fn clone(&self) -> ~rtio::RtioPipe:Send {
         ~FileDesc { inner: self.inner.clone() } as ~rtio::RtioPipe:Send
     }
+
+    // Only supported on named pipes currently
+    fn close_read(&mut self) -> IoResult<()> {
+        Err(io::standard_error(io::InvalidInput))
+    }
+    fn close_write(&mut self) -> IoResult<()> {
+        Err(io::standard_error(io::InvalidInput))
+    }
 }
 
 impl rtio::RtioTTY for FileDesc {
