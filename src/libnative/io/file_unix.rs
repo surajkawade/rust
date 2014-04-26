@@ -179,12 +179,16 @@ impl rtio::RtioPipe for FileDesc {
         ~FileDesc { inner: self.inner.clone() } as ~rtio::RtioPipe:Send
     }
 
+    // These are only supported on unix streams
     fn close_write(&mut self) -> IoResult<()> {
-        super::mkerr_libc(unsafe { libc::shutdown(self.fd(), libc::SHUT_WR) })
+        Err(io::standard_error(io::InvalidInput))
     }
     fn close_read(&mut self) -> IoResult<()> {
-        super::mkerr_libc(unsafe { libc::shutdown(self.fd(), libc::SHUT_RD) })
+        Err(io::standard_error(io::InvalidInput))
     }
+    fn set_timeout(&mut self, _t: Option<u64>) {}
+    fn set_read_timeout(&mut self, _t: Option<u64>) {}
+    fn set_write_timeout(&mut self, _t: Option<u64>) {}
 }
 
 impl rtio::RtioTTY for FileDesc {
