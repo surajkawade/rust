@@ -215,6 +215,9 @@ pub trait RtioTcpStream : RtioSocket {
     fn clone(&self) -> ~RtioTcpStream:Send;
     fn close_write(&mut self) -> IoResult<()>;
     fn close_read(&mut self) -> IoResult<()>;
+    fn set_timeout(&mut self, timeout_ms: Option<u64>);
+    fn set_read_timeout(&mut self, timeout_ms: Option<u64>);
+    fn set_write_timeout(&mut self, timeout_ms: Option<u64>);
 }
 
 pub trait RtioSocket {
@@ -238,6 +241,9 @@ pub trait RtioUdpSocket : RtioSocket {
     fn ignore_broadcasts(&mut self) -> IoResult<()>;
 
     fn clone(&self) -> ~RtioUdpSocket:Send;
+    fn set_timeout(&mut self, timeout_ms: Option<u64>);
+    fn set_read_timeout(&mut self, timeout_ms: Option<u64>);
+    fn set_write_timeout(&mut self, timeout_ms: Option<u64>);
 }
 
 pub trait RtioTimer {
@@ -271,6 +277,9 @@ pub trait RtioPipe {
 
     fn close_write(&mut self) -> IoResult<()>;
     fn close_read(&mut self) -> IoResult<()>;
+    fn set_timeout(&mut self, timeout_ms: Option<u64>);
+    fn set_read_timeout(&mut self, timeout_ms: Option<u64>);
+    fn set_write_timeout(&mut self, timeout_ms: Option<u64>);
 }
 
 pub trait RtioUnixListener {

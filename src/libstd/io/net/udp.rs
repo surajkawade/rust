@@ -19,6 +19,7 @@ use clone::Clone;
 use io::net::ip::SocketAddr;
 use io::{Reader, Writer, IoResult};
 use kinds::Send;
+use option::Option;
 use result::{Ok, Err};
 use rt::rtio::{RtioSocket, RtioUdpSocket, IoFactory, LocalIo};
 
@@ -94,6 +95,27 @@ impl UdpSocket {
     /// Returns the socket address that this socket was created from.
     pub fn socket_name(&mut self) -> IoResult<SocketAddr> {
         self.obj.socket_name()
+    }
+
+    /// Sets the read/write timeout for this socket.
+    ///
+    /// For more information, see `TcpStream::set_timeout`
+    pub fn set_timeout(&mut self, timeout_ms: Option<u64>) {
+        self.obj.set_timeout(timeout_ms)
+    }
+
+    /// Sets the read timeout for this socket.
+    ///
+    /// For more information, see `TcpStream::set_timeout`
+    pub fn set_read_timeout(&mut self, timeout_ms: Option<u64>) {
+        self.obj.set_read_timeout(timeout_ms)
+    }
+
+    /// Sets the write timeout for this socket.
+    ///
+    /// For more information, see `TcpStream::set_timeout`
+    pub fn set_write_timeout(&mut self, timeout_ms: Option<u64>) {
+        self.obj.set_write_timeout(timeout_ms)
     }
 }
 
@@ -435,5 +457,57 @@ mod test {
 
         rx.recv();
         serv_rx.recv();
+    })
+
+    iotest!(fn recvfrom_timeout() {
+        let addr1 = next_test_ip4();
+        let addr2 = next_test_ip4();
+        let mut a = UdpSocket::bind(addr1).unwrap();
+
+        let (tx, rx) = channel();
+        let (tx2, rx2) = channel();
+        spawn(proc() {
+            let mut a = UdpSocket::bind(addr2).unwrap();
+            assert_eq!(a.recvfrom([0]), Ok((1, addr1)));
+            assert_eq!(a.sendto([0], addr1), Ok(()));
+            rx.recv();
+            assert_eq!(a.sendto([0], addr1), Ok(()));
+
+            tx2.send(());
+        });
+
+        // Make sure that reads time out, but writes can continue
+        a.set_read_timeout(Some(20));
+        assert_eq!(a.recvfrom([0]).err().unwrap().kind, TimedOut);
+        assert_eq!(a.recvfrom([0]).err().unwrap().kind, TimedOut);
+        assert_eq!(a.sendto([0], addr2), Ok(()));
+
+        // Cloned handles should be able to block
+        let mut a2 = a.clone();
+        assert_eq!(a2.recvfrom([0]), Ok((1, addr2)));
+
+        // Clearing the timeout should allow for receiving
+        a.set_timeout(None);
+        tx.send(());
+        assert_eq!(a2.recvfrom([0]), Ok((1, addr2)));
+
+        // Make sure the child didn't die
+        rx2.recv();
+    })
+
+    iotest!(fn sendto_timeout() {
+        let addr1 = next_test_ip4();
+        let addr2 = next_test_ip4();
+        let mut a = UdpSocket::bind(addr1).unwrap();
+        let _b = UdpSocket::bind(addr2).unwrap();
+
+        a.set_write_timeout(Some(1000));
+        for _ in range(0, 100) {
+            match a.sendto([0, ..4*1024], addr2) {
+                Ok(()) | Err(IoError { kind: ShortWrite(..), .. }) => {},
+                Err(IoError { kind: TimedOut, .. }) => break,
+                Err(e) => fail!("other error: {}", e),
+            }
+        }
     })
 }
