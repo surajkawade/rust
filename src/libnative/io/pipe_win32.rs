@@ -169,6 +169,27 @@ unsafe fn pipe(name: *u16, init: bool) -> libc::HANDLE {
     )
 }
 
+pub fn await(handle: libc::HANDLE, deadline: u64,
+             overlapped: &mut libc::OVERLAPPED) -> bool {
+    if deadline == 0 { return true }
+
+    // If we've got a timeout, use WaitForSingleObject in tandem with CancelIo
+    // to figure out if we should indeed get the result.
+    let now = ::io::timer::now();
+    let timeout = deadline < now || unsafe {
+        let ms = (deadline - now) as libc::DWORD;
+        let r = libc::WaitForSingleObject(overlapped.hEvent,
+                                          ms);
+        r != libc::WAIT_OBJECT_0
+    };
+    if timeout {
+        unsafe { let _ = c::CancelIo(handle); }
+        false
+    } else {
+        true
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Unix Streams
 ////////////////////////////////////////////////////////////////////////////////
@@ -177,6 +198,8 @@ pub struct UnixStream {
     inner: UnsafeArc<Inner>,
     write: Option<Event>,
     read: Option<Event>,
+    read_deadline: u64,
+    write_deadline: u64,
 }
 
 impl UnixStream {
@@ -253,6 +276,8 @@ impl UnixStream {
                                 inner: UnsafeArc::new(inner),
                                 read: None,
                                 write: None,
+                                read_deadline: 0,
+                                write_deadline: 0,
                             })
                         }
                     }
@@ -356,6 +381,10 @@ impl rtio::RtioPipe for UnixStream {
         // sleep.
         drop(guard);
         loop {
+            // Process a timeout if one is pending
+            let succeeded = await(self.handle(), self.read_deadline,
+                                  &mut overlapped);
+
             let ret = unsafe {
                 libc::GetOverlappedResult(self.handle(),
                                           &mut overlapped,
@@ -371,6 +400,9 @@ impl rtio::RtioPipe for UnixStream {
 
             // If the reading half is now closed, then we're done. If we woke up
             // because the writing half was closed, keep trying.
+            if !succeeded {
+                return Err(io::standard_error(io::TimedOut))
+            }
             if self.read_closed() {
                 return Err(io::standard_error(io::EndOfFile))
             }
@@ -410,6 +442,9 @@ impl rtio::RtioPipe for UnixStream {
                 if os::errno() != libc::ERROR_IO_PENDING as uint {
                     return Err(super::last_error())
                 }
+                // Process a timeout if one is pending
+                let succeeded = await(self.handle(), self.write_deadline,
+                                      &mut overlapped);
                 let ret = unsafe {
                     libc::GetOverlappedResult(self.handle(),
                                               &mut overlapped,
@@ -423,10 +458,17 @@ impl rtio::RtioPipe for UnixStream {
                     if os::errno() != libc::ERROR_OPERATION_ABORTED as uint {
                         return Err(super::last_error())
                     }
+                    if !succeeded {
+                        return Err(io::IoError {
+                            kind: io::ShortWrite(offset + bytes_written as uint),
+                            desc: "short write during write",
+                            detail: None,
+                        })
+                    }
                     if self.write_closed() {
                         return Err(io::standard_error(io::BrokenPipe))
                     }
-                    continue; // retry
+                    continue // retry
                 }
             }
             offset += bytes_written as uint;
@@ -439,6 +481,8 @@ impl rtio::RtioPipe for UnixStream {
             inner: self.inner.clone(),
             read: None,
             write: None,
+            read_deadline: 0,
+            write_deadline: 0,
         } as ~rtio::RtioPipe:Send
     }
 
@@ -452,6 +496,18 @@ impl rtio::RtioPipe for UnixStream {
         let _guard = unsafe { (*self.inner.get()).lock.lock() };
         unsafe { (*self.inner.get()).write_closed.store(true, atomics::SeqCst) }
         self.cancel_io()
+    }
+
+    fn set_timeout(&mut self, timeout: Option<u64>) {
+        let deadline = timeout.map(|a| ::io::timer::now() + a).unwrap_or(0);
+        self.read_deadline = deadline;
+        self.write_deadline = deadline;
+    }
+    fn set_read_timeout(&mut self, timeout: Option<u64>) {
+        self.read_deadline = timeout.map(|a| ::io::timer::now() + a).unwrap_or(0);
+    }
+    fn set_write_timeout(&mut self, timeout: Option<u64>) {
+        self.write_deadline = timeout.map(|a| ::io::timer::now() + a).unwrap_or(0);
     }
 }
 
@@ -553,22 +609,8 @@ impl UnixAcceptor {
             let mut err = unsafe { libc::GetLastError() };
 
             if err == libc::ERROR_IO_PENDING as libc::DWORD {
-                // If we've got a timeout, use WaitForSingleObject in tandem
-                // with CancelIo to figure out if we should indeed get the
-                // result.
-                if self.deadline != 0 {
-                    let now = ::io::timer::now();
-                    let timeout = self.deadline < now || unsafe {
-                        let ms = (self.deadline - now) as libc::DWORD;
-                        let r = libc::WaitForSingleObject(overlapped.hEvent,
-                                                          ms);
-                        r != libc::WAIT_OBJECT_0
-                    };
-                    if timeout {
-                        unsafe { let _ = c::CancelIo(handle); }
-                        return Err(util::timeout("accept timed out"))
-                    }
-                }
+                // Process a timeout if one is pending
+                let _ = await(handle, self.deadline, &mut overlapped);
 
                 // This will block until the overlapped I/O is completed. The
                 // timeout was previously handled, so this will either block in
@@ -614,6 +656,8 @@ impl UnixAcceptor {
             inner: UnsafeArc::new(Inner::new(handle)),
             read: None,
             write: None,
+            read_deadline: 0,
+            write_deadline: 0,
         })
     }
 }
